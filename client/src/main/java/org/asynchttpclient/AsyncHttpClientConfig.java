@@ -1,6 +1,20 @@
+/*
+ * Copyright (c) 2015 AsyncHttpClient Project. All rights reserved.
+ *
+ * This program is licensed to you under the Apache License Version 2.0,
+ * and you may not use this file except in compliance with the Apache License Version 2.0.
+ * You may obtain a copy of the Apache License Version 2.0 at
+ *     http://www.apache.org/licenses/LICENSE-2.0.
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the Apache License Version 2.0 is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the Apache License Version 2.0 for the specific language governing permissions and limitations there under.
+ */
 package org.asynchttpclient;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
@@ -69,6 +83,11 @@ public interface AsyncHttpClientConfig {
      * @return the maximum time in millisecond an {@link AsyncHttpClient} will keep connection in pool.
      */
     int getPooledConnectionIdleTimeout();
+
+    /**
+     * @return the period in millis to clean the pool of dead and idle connections.
+     */
+    int getConnectionPoolCleanerPeriod();
 
     /**
      * Return the maximum time in millisecond an {@link AsyncHttpClient} waits until the response is completed.
@@ -267,7 +286,9 @@ public interface AsyncHttpClientConfig {
 
     int getSoRcvBuf();
 
-    boolean isUsePooledMemory();
+    ByteBufAllocator getAllocator();
+
+    int getIoThreadsCount();
 
     interface AdditionalChannelInitializer {
 

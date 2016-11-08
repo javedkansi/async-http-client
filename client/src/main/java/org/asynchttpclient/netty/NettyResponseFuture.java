@@ -14,27 +14,23 @@
 package org.asynchttpclient.netty;
 
 import static org.asynchttpclient.util.DateUtils.unpreciseMillisTime;
-import static org.asynchttpclient.util.MiscUtils.getCause;
 import static io.netty.util.internal.PlatformDependent.*;
 import io.netty.channel.Channel;
 
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
-import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 
 import org.asynchttpclient.AsyncHandler;
+import org.asynchttpclient.ListenableFuture;
 import org.asynchttpclient.Realm;
 import org.asynchttpclient.Request;
 import org.asynchttpclient.channel.ChannelPoolPartitioning;
-import org.asynchttpclient.future.AbstractListenableFuture;
 import org.asynchttpclient.netty.channel.ChannelState;
 import org.asynchttpclient.netty.channel.Channels;
 import org.asynchttpclient.netty.request.NettyRequest;
@@ -49,40 +45,42 @@ import org.slf4j.LoggerFactory;
  * 
  * @param <V> the result type
  */
-public final class NettyResponseFuture<V> extends AbstractListenableFuture<V> {
+public final class NettyResponseFuture<V> implements ListenableFuture<V> {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(NettyResponseFuture.class);
 
     private static final AtomicIntegerFieldUpdater<NettyResponseFuture<?>> REDIRECT_COUNT_UPDATER = newAtomicIntegerFieldUpdater(NettyResponseFuture.class, "redirectCount");
     private static final AtomicIntegerFieldUpdater<NettyResponseFuture<?>> CURRENT_RETRY_UPDATER = newAtomicIntegerFieldUpdater(NettyResponseFuture.class, "currentRetry");
-    @SuppressWarnings("rawtypes")
-    // FIXME see https://github.com/netty/netty/pull/4669
-    private static final AtomicReferenceFieldUpdater<NettyResponseFuture, Object> CONTENT_UPDATER = newAtomicReferenceFieldUpdater(NettyResponseFuture.class, "content");
-    @SuppressWarnings("rawtypes")
-    // FIXME see https://github.com/netty/netty/pull/4669
-    private static final AtomicReferenceFieldUpdater<NettyResponseFuture, ExecutionException> EX_EX_UPDATER = newAtomicReferenceFieldUpdater(NettyResponseFuture.class, "exEx");
 
     private final long start = unpreciseMillisTime();
     private final ChannelPoolPartitioning connectionPoolPartitioning;
     private final ProxyServer proxyServer;
     private final int maxRetry;
-    private final CountDownLatch latch = new CountDownLatch(1);
+    private final CompletableFuture<V> future = new CompletableFuture<>();
 
     // state mutated from outside the event loop
     // TODO check if they are indeed mutated outside the event loop
-    private final AtomicBoolean isDone = new AtomicBoolean(false);
-    private final AtomicBoolean isCancelled = new AtomicBoolean(false);
-    private final AtomicBoolean inAuth = new AtomicBoolean(false);
-    private final AtomicBoolean inProxyAuth = new AtomicBoolean(false);
-    private final AtomicBoolean statusReceived = new AtomicBoolean(false);
-    private final AtomicBoolean contentProcessed = new AtomicBoolean(false);
-    private final AtomicBoolean onThrowableCalled = new AtomicBoolean(false);
+    private volatile int isDone = 0;
+    private volatile int isCancelled = 0;
+    private volatile int inAuth = 0;
+    private volatile int inProxyAuth = 0;
+    private volatile int statusReceived = 0;
+    @SuppressWarnings("unused")
+    private volatile int contentProcessed = 0;
+    @SuppressWarnings("unused")
+    private volatile int onThrowableCalled = 0;
+
+    private static final AtomicIntegerFieldUpdater<NettyResponseFuture<?>> isDoneField = newAtomicIntegerFieldUpdater(NettyResponseFuture.class, "isDone");
+    private static final AtomicIntegerFieldUpdater<NettyResponseFuture<?>> isCancelledField = newAtomicIntegerFieldUpdater(NettyResponseFuture.class, "isCancelled");
+    private static final AtomicIntegerFieldUpdater<NettyResponseFuture<?>> inAuthField = newAtomicIntegerFieldUpdater(NettyResponseFuture.class, "inAuth");
+    private static final AtomicIntegerFieldUpdater<NettyResponseFuture<?>> inProxyAuthField = newAtomicIntegerFieldUpdater(NettyResponseFuture.class, "inProxyAuth");
+    private static final AtomicIntegerFieldUpdater<NettyResponseFuture<?>> statusReceivedField = newAtomicIntegerFieldUpdater(NettyResponseFuture.class, "statusReceived");
+    private static final AtomicIntegerFieldUpdater<NettyResponseFuture<?>> contentProcessedField = newAtomicIntegerFieldUpdater(NettyResponseFuture.class, "contentProcessed");
+    private static final AtomicIntegerFieldUpdater<NettyResponseFuture<?>> onThrowableCalledField = newAtomicIntegerFieldUpdater(NettyResponseFuture.class, "onThrowableCalled");
 
     // volatile where we need CAS ops
     private volatile int redirectCount = 0;
     private volatile int currentRetry = 0;
-    private volatile V content;
-    private volatile ExecutionException exEx;
 
     // volatile where we don't need CAS ops
     private volatile long touch = unpreciseMillisTime();
@@ -96,7 +94,7 @@ public final class NettyResponseFuture<V> extends AbstractListenableFuture<V> {
     private Request currentRequest;
     private NettyRequest nettyRequest;
     private AsyncHandler<V> asyncHandler;
-    private boolean streamWasAlreadyConsumed;
+    private boolean streamAlreadyConsumed;
     private boolean reuseChannel;
     private boolean headersAlreadyWrittenOnContinue;
     private boolean dontWriteBodyBecauseExpectContinue;
@@ -124,19 +122,19 @@ public final class NettyResponseFuture<V> extends AbstractListenableFuture<V> {
 
     @Override
     public boolean isDone() {
-        return isDone.get() || isCancelled();
+        return isDone != 0 || isCancelled();
     }
 
     @Override
     public boolean isCancelled() {
-        return isCancelled.get();
+        return isCancelled != 0;
     }
 
     @Override
     public boolean cancel(boolean force) {
         cancelTimeouts();
 
-        if (isCancelled.getAndSet(true))
+        if (isCancelledField.getAndSet(this, 1) != 0)
             return false;
 
         // cancel could happen before channel was attached
@@ -145,64 +143,58 @@ public final class NettyResponseFuture<V> extends AbstractListenableFuture<V> {
             Channels.silentlyCloseChannel(channel);
         }
 
-        if (!onThrowableCalled.getAndSet(true)) {
+        if (onThrowableCalledField.getAndSet(this, 1) == 0) {
             try {
                 asyncHandler.onThrowable(new CancellationException());
             } catch (Throwable t) {
                 LOGGER.warn("cancel", t);
             }
         }
-        latch.countDown();
-        runListeners();
+
+        future.cancel(false);
         return true;
     }
 
     @Override
     public V get() throws InterruptedException, ExecutionException {
-        latch.await();
-        return getContent();
+        return future.get();
     }
 
     @Override
     public V get(long l, TimeUnit tu) throws InterruptedException, TimeoutException, ExecutionException {
-        if (!latch.await(l, tu))
-            throw new TimeoutException();
-        return getContent();
+        return future.get(l, tu);
     }
 
     private V getContent() throws ExecutionException {
+        if (future.isDone()) {
+            try {
+                return future.get();
+            } catch (InterruptedException e) {
+                throw new RuntimeException("unreachable", e);
+            }
+        }
 
-        if (isCancelled())
-            throw new CancellationException();
-
-        ExecutionException e = EX_EX_UPDATER.get(this);
-        if (e != null)
-            throw e;
-
-        @SuppressWarnings("unchecked")
-        V update = (V) CONTENT_UPDATER.get(this);
         // No more retry
         CURRENT_RETRY_UPDATER.set(this, maxRetry);
-        if (!contentProcessed.getAndSet(true)) {
+        if (contentProcessedField.getAndSet(this, 1) == 0) {
             try {
-                update = asyncHandler.onCompleted();
+                future.complete(asyncHandler.onCompleted());
             } catch (Throwable ex) {
-                if (!onThrowableCalled.getAndSet(true)) {
+                if (onThrowableCalledField.getAndSet(this, 1) == 0) {
                     try {
                         try {
                             asyncHandler.onThrowable(ex);
                         } catch (Throwable t) {
                             LOGGER.debug("asyncHandler.onThrowable", t);
                         }
-                        throw new RuntimeException(ex);
                     } finally {
                         cancelTimeouts();
                     }
                 }
+                future.completeExceptionally(ex);
             }
-            CONTENT_UPDATER.compareAndSet(this, null, update);
         }
-        return update;
+        return future.getNow(null);
     }
 
     // org.asynchttpclient.ListenableFuture
@@ -211,7 +203,7 @@ public final class NettyResponseFuture<V> extends AbstractListenableFuture<V> {
         cancelTimeouts();
         this.channel = null;
         this.reuseChannel = false;
-        return isDone.getAndSet(true) || isCancelled.get();
+        return isDoneField.getAndSet(this, 1) != 0 || isCancelled != 0;
     }
 
     public final void done() {
@@ -221,35 +213,30 @@ public final class NettyResponseFuture<V> extends AbstractListenableFuture<V> {
 
         try {
             getContent();
+        } catch (ExecutionException ignored) {
 
-        } catch (ExecutionException t) {
-            return;
         } catch (RuntimeException t) {
-            EX_EX_UPDATER.compareAndSet(this, null, new ExecutionException(getCause(t)));
-
-        } finally {
-            latch.countDown();
+            future.completeExceptionally(t);
+        } catch (Throwable t) {
+            future.completeExceptionally(t);
+            throw t;
         }
-
-        runListeners();
     }
 
     public final void abort(final Throwable t) {
 
-        EX_EX_UPDATER.compareAndSet(this, null, new ExecutionException(t));
+        future.completeExceptionally(t);
 
         if (terminateAndExit())
             return;
 
-        if (onThrowableCalled.compareAndSet(false, true)) {
+        if (onThrowableCalledField.compareAndSet(this, 0, 1)) {
             try {
                 asyncHandler.onThrowable(t);
             } catch (Throwable te) {
                 LOGGER.debug("asyncHandler.onThrowable", te);
             }
         }
-        latch.countDown();
-        runListeners();
     }
 
     @Override
@@ -258,27 +245,14 @@ public final class NettyResponseFuture<V> extends AbstractListenableFuture<V> {
     }
 
     @Override
+    public ListenableFuture<V> addListener(Runnable listener, Executor exec) {
+        future.whenCompleteAsync((r, v) -> listener.run(), exec);
+        return this;
+    }
+
+    @Override
     public CompletableFuture<V> toCompletableFuture() {
-        CompletableFuture<V> completable = new CompletableFuture<>();
-        addListener(new Runnable() {
-            @Override
-            @SuppressWarnings("unchecked")
-            public void run() {
-                ExecutionException e = EX_EX_UPDATER.get(NettyResponseFuture.this);
-                if (e != null)
-                    completable.completeExceptionally(e.getCause());
-                else
-                    completable.complete((V) CONTENT_UPDATER.get(NettyResponseFuture.this));
-            }
-
-        }, new Executor() {
-            @Override
-            public void execute(Runnable command) {
-                command.run();
-            }
-        });
-
-        return completable;
+        return future;
     }
 
     // INTERNAL
@@ -346,12 +320,28 @@ public final class NettyResponseFuture<V> extends AbstractListenableFuture<V> {
         return timeoutsHolder;
     }
 
-    public AtomicBoolean getInAuth() {
-        return inAuth;
+    public boolean isInAuth() {
+        return inAuth != 0;
     }
 
-    public AtomicBoolean getInProxyAuth() {
-        return inProxyAuth;
+    public void setInAuth(boolean inAuth) {
+        this.inAuth = inAuth ? 1 : 0;
+    }
+
+    public boolean isAndSetInAuth(boolean set) {
+        return inAuthField.getAndSet(this, set ? 1 : 0) != 0;
+    }
+
+    public boolean isInProxyAuth() {
+        return inProxyAuth != 0;
+    }
+
+    public void setInProxyAuth(boolean inProxyAuth) {
+        this.inProxyAuth = inProxyAuth ? 1 : 0;
+    }
+
+    public boolean isAndSetInProxyAuth(boolean inProxyAuth) {
+        return inProxyAuthField.getAndSet(this, inProxyAuth ? 1 : 0) != 0;
     }
 
     public ChannelState getChannelState() {
@@ -362,16 +352,16 @@ public final class NettyResponseFuture<V> extends AbstractListenableFuture<V> {
         this.channelState = channelState;
     }
 
-    public boolean getAndSetStatusReceived(boolean sr) {
-        return statusReceived.getAndSet(sr);
+    public boolean isAndSetStatusReceived(boolean sr) {
+        return statusReceivedField.getAndSet(this, sr ? 1 : 0) != 0;
     }
 
-    public boolean isStreamWasAlreadyConsumed() {
-        return streamWasAlreadyConsumed;
+    public boolean isStreamConsumed() {
+        return streamAlreadyConsumed;
     }
 
-    public void setStreamWasAlreadyConsumed(boolean streamWasAlreadyConsumed) {
-        this.streamWasAlreadyConsumed = streamWasAlreadyConsumed;
+    public void setStreamConsumed(boolean streamConsumed) {
+        this.streamAlreadyConsumed = streamConsumed;
     }
 
     public long getLastTouch() {
@@ -421,7 +411,7 @@ public final class NettyResponseFuture<V> extends AbstractListenableFuture<V> {
         return channel;
     }
 
-    public boolean reuseChannel() {
+    public boolean isReuseChannel() {
         return reuseChannel;
     }
 
@@ -443,8 +433,8 @@ public final class NettyResponseFuture<V> extends AbstractListenableFuture<V> {
      * 
      * @return true if that {@link Future} cannot be recovered.
      */
-    public boolean canBeReplayed() {
-        return !isDone() && !(Channels.isChannelValid(channel) && !getUri().getScheme().equalsIgnoreCase("https")) && !inAuth.get() && !inProxyAuth.get();
+    public boolean isReplayPossible() {
+        return !isDone() && !(Channels.isChannelValid(channel) && !getUri().getScheme().equalsIgnoreCase("https")) && inAuth == 0 && inProxyAuth == 0;
     }
 
     public long getStart() {
@@ -479,10 +469,9 @@ public final class NettyResponseFuture<V> extends AbstractListenableFuture<V> {
                 ",\n\tisCancelled=" + isCancelled + //
                 ",\n\tasyncHandler=" + asyncHandler + //
                 ",\n\tnettyRequest=" + nettyRequest + //
-                ",\n\tcontent=" + content + //
+                ",\n\tfuture=" + future + //
                 ",\n\turi=" + getUri() + //
                 ",\n\tkeepAlive=" + keepAlive + //
-                ",\n\texEx=" + exEx + //
                 ",\n\tredirectCount=" + redirectCount + //
                 ",\n\ttimeoutsHolder=" + timeoutsHolder + //
                 ",\n\tinAuth=" + inAuth + //

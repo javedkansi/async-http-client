@@ -86,7 +86,7 @@ public final class HttpHandler extends AsyncHttpClientHandler {
             HttpResponse response, AsyncHandler<?> handler,//
             NettyResponseStatus status,//
             HttpRequest httpRequest) throws IOException, Exception {
-        return !future.getAndSetStatusReceived(true) && handler.onStatusReceived(status) != State.CONTINUE;
+        return !future.isAndSetStatusReceived(true) && handler.onStatusReceived(status) != State.CONTINUE;
     }
 
     private boolean exitAfterHandlingHeaders(//
@@ -161,8 +161,6 @@ public final class HttpHandler extends AsyncHttpClientHandler {
 
     @Override
     public void handleRead(final Channel channel, final NettyResponseFuture<?> future, final Object e) throws Exception {
-
-        future.touch();
 
         // future is already done because of an exception or a timeout
         if (future.isDone()) {

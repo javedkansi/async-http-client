@@ -8,7 +8,7 @@ Async Http Client ([@AsyncHttpClient](https://twitter.com/AsyncHttpClient) on tw
 The Async Http Client library's purpose is to allow Java applications to easily execute HTTP requests and asynchronously process the HTTP responses.
 The library also supports the WebSocket Protocol. The Async HTTP Client library is simple to use.
 
-I's built on top of [Netty](https://github.com/netty/netty) and currently requires JDK8.
+It's built on top of [Netty](https://github.com/netty/netty) and currently requires JDK8.
 
 Latest `version`: [![Maven][mavenImg]][mavenLink]
 
@@ -67,6 +67,26 @@ asyncHttpClient.prepareGet("http://www.example.com/").execute(new AsyncCompletio
 
 (this will also fully read `Response` in memory before calling `onCompleted`)
 
+Alternatively you may use continuations (through Java 8 class `CompletableFuture<T>`) to accomplish asynchronous (non-blocking) solution. The equivalent continuation approach to the previous example is:
+
+```java
+import static org.asynchttpclient.Dsl.*;
+
+import org.asynchttpclient.*;
+import java.util.concurrent.CompletableFuture;
+
+AsyncHttpClient asyncHttpClient = asyncHttpClient();
+CompletableFuture<Response> promise = asyncHttpClient
+            .prepareGet("http://www.example.com/")
+            .execute()
+            .toCompletableFuture()
+            .exceptionally(t -> { /* Something wrong happened... */  } )
+            .thenApply(resp -> { /*  Do something with the Response */ return resp; });
+promise.join(); // wait for completion
+```
+
+You may get the complete maven project for this simple demo from [org.asynchttpclient.example](https://github.com/AsyncHttpClient/async-http-client/tree/master/example/src/main/java/org/asynchttpclient/example)
+
 You can also mix Future with AsyncHandler to only retrieve part of the asynchronous response
 
 ```java
@@ -97,10 +117,12 @@ which is something you want to do for large responses: this way you can process 
  You have full control on the Response life cycle, so you can decide at any moment to stop processing what the server is sending back:
 
 ```java
+import static org.asynchttpclient.Dsl.*;
+
 import org.asynchttpclient.*;
 import java.util.concurrent.Future;
 
-AsyncHttpClient c = new DefaultAsyncHttpClient();
+AsyncHttpClient c = asyncHttpClient();
 Future<String> f = c.prepareGet("http://www.example.com/").execute(new AsyncHandler<String>() {
     private ByteArrayOutputStream bytes = new ByteArrayOutputStream();
 

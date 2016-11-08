@@ -33,9 +33,15 @@ public class NettyInputStreamBody implements NettyBody {
     private static final Logger LOGGER = LoggerFactory.getLogger(NettyInputStreamBody.class);
 
     private final InputStream inputStream;
+    private final long contentLength;
 
     public NettyInputStreamBody(InputStream inputStream) {
+        this(inputStream, -1L);
+    }
+
+    public NettyInputStreamBody(InputStream inputStream, long contentLength) {
         this.inputStream = inputStream;
+        this.contentLength = contentLength;
     }
 
     public InputStream getInputStream() {
@@ -44,7 +50,7 @@ public class NettyInputStreamBody implements NettyBody {
 
     @Override
     public long getContentLength() {
-        return -1L;
+        return contentLength;
     }
 
     @Override
@@ -56,7 +62,7 @@ public class NettyInputStreamBody implements NettyBody {
     public void write(Channel channel, NettyResponseFuture<?> future) throws IOException {
         final InputStream is = inputStream;
 
-        if (future.isStreamWasAlreadyConsumed()) {
+        if (future.isStreamConsumed()) {
             if (is.markSupported())
                 is.reset();
             else {
@@ -64,7 +70,7 @@ public class NettyInputStreamBody implements NettyBody {
                 return;
             }
         } else {
-            future.setStreamWasAlreadyConsumed(true);
+            future.setStreamConsumed(true);
         }
 
         channel.write(new ChunkedStream(is), channel.newProgressivePromise()).addListener(

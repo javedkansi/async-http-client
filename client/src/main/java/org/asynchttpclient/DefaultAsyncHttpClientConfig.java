@@ -16,6 +16,7 @@
 package org.asynchttpclient;
 
 import static org.asynchttpclient.config.AsyncHttpClientConfigDefaults.*;
+import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.handler.ssl.SslContext;
@@ -85,6 +86,7 @@ public class DefaultAsyncHttpClientConfig implements AsyncHttpClientConfig {
     // keep-alive
     private final boolean keepAlive;
     private final int pooledConnectionIdleTimeout;
+    private final int connectionPoolCleanerPeriod;
     private final int connectionTtl;
     private final int maxConnections;
     private final int maxConnectionsPerHost;
@@ -118,7 +120,7 @@ public class DefaultAsyncHttpClientConfig implements AsyncHttpClientConfig {
     private final Map<ChannelOption<Object>, Object> channelOptions;
     private final EventLoopGroup eventLoopGroup;
     private final boolean useNativeTransport;
-    private final boolean usePooledMemory;
+    private final ByteBufAllocator allocator;
     private final boolean tcpNoDelay;
     private final boolean soReuseAddress;
     private final int soLinger;
@@ -129,6 +131,7 @@ public class DefaultAsyncHttpClientConfig implements AsyncHttpClientConfig {
     private final AdditionalChannelInitializer httpAdditionalChannelInitializer;
     private final AdditionalChannelInitializer wsAdditionalChannelInitializer;
     private final ResponseBodyPartFactory responseBodyPartFactory;
+    private final int ioThreadsCount;
 
     private DefaultAsyncHttpClientConfig(//
             // http
@@ -155,6 +158,7 @@ public class DefaultAsyncHttpClientConfig implements AsyncHttpClientConfig {
             // keep-alive
             boolean keepAlive,//
             int pooledConnectionIdleTimeout,//
+            int connectionPoolCleanerPeriod,//
             int connectionTtl,//
             int maxConnections,//
             int maxConnectionsPerHost,//
@@ -195,12 +199,13 @@ public class DefaultAsyncHttpClientConfig implements AsyncHttpClientConfig {
             Map<ChannelOption<Object>, Object> channelOptions,//
             EventLoopGroup eventLoopGroup,//
             boolean useNativeTransport,//
-            boolean usePooledMemory,//
+            ByteBufAllocator allocator,//
             Timer nettyTimer,//
             ThreadFactory threadFactory,//
             AdditionalChannelInitializer httpAdditionalChannelInitializer,//
             AdditionalChannelInitializer wsAdditionalChannelInitializer,//
-            ResponseBodyPartFactory responseBodyPartFactory) {
+            ResponseBodyPartFactory responseBodyPartFactory,//
+            int ioThreadsCount) {
 
         // http
         this.followRedirect = followRedirect;
@@ -226,6 +231,7 @@ public class DefaultAsyncHttpClientConfig implements AsyncHttpClientConfig {
         // keep-alive
         this.keepAlive = keepAlive;
         this.pooledConnectionIdleTimeout = pooledConnectionIdleTimeout;
+        this.connectionPoolCleanerPeriod = connectionPoolCleanerPeriod;
         this.connectionTtl = connectionTtl;
         this.maxConnections = maxConnections;
         this.maxConnectionsPerHost = maxConnectionsPerHost;
@@ -266,12 +272,13 @@ public class DefaultAsyncHttpClientConfig implements AsyncHttpClientConfig {
         this.channelOptions = channelOptions;
         this.eventLoopGroup = eventLoopGroup;
         this.useNativeTransport = useNativeTransport;
-        this.usePooledMemory = usePooledMemory;
+        this.allocator = allocator;
         this.nettyTimer = nettyTimer;
         this.threadFactory = threadFactory;
         this.httpAdditionalChannelInitializer = httpAdditionalChannelInitializer;
         this.wsAdditionalChannelInitializer = wsAdditionalChannelInitializer;
         this.responseBodyPartFactory = responseBodyPartFactory;
+        this.ioThreadsCount = ioThreadsCount;
     }
 
     @Override
@@ -371,6 +378,11 @@ public class DefaultAsyncHttpClientConfig implements AsyncHttpClientConfig {
     @Override
     public int getPooledConnectionIdleTimeout() {
         return pooledConnectionIdleTimeout;
+    }
+
+    @Override
+    public int getConnectionPoolCleanerPeriod() {
+        return connectionPoolCleanerPeriod;
     }
 
     @Override
@@ -543,8 +555,8 @@ public class DefaultAsyncHttpClientConfig implements AsyncHttpClientConfig {
     }
 
     @Override
-    public boolean isUsePooledMemory() {
-        return usePooledMemory;
+    public ByteBufAllocator getAllocator() {
+        return allocator;
     }
 
     @Override
@@ -570,6 +582,11 @@ public class DefaultAsyncHttpClientConfig implements AsyncHttpClientConfig {
     @Override
     public ResponseBodyPartFactory getResponseBodyPartFactory() {
         return responseBodyPartFactory;
+    }
+
+    @Override
+    public int getIoThreadsCount() {
+        return ioThreadsCount;
     }
 
     /**
@@ -603,6 +620,7 @@ public class DefaultAsyncHttpClientConfig implements AsyncHttpClientConfig {
         // keep-alive
         private boolean keepAlive = defaultKeepAlive();
         private int pooledConnectionIdleTimeout = defaultPooledConnectionIdleTimeout();
+        private int connectionPoolCleanerPeriod = defaultConnectionPoolCleanerPeriod();
         private int connectionTtl = defaultConnectionTtl();
         private int maxConnections = defaultMaxConnections();
         private int maxConnectionsPerHost = defaultMaxConnectionsPerHost();
@@ -614,7 +632,7 @@ public class DefaultAsyncHttpClientConfig implements AsyncHttpClientConfig {
         private boolean acceptAnyCertificate = defaultAcceptAnyCertificate();
         private int handshakeTimeout = defaultHandshakeTimeout();
         private String[] enabledProtocols = defaultEnabledProtocols();
-        private String[] enabledCipherSuites;
+        private String[] enabledCipherSuites = defaultEnabledCipherSuites();
         private int sslSessionCacheSize = defaultSslSessionCacheSize();
         private int sslSessionTimeout = defaultSslSessionTimeout();
         private SslContext sslContext;
@@ -641,7 +659,7 @@ public class DefaultAsyncHttpClientConfig implements AsyncHttpClientConfig {
         private int webSocketMaxBufferSize = defaultWebSocketMaxBufferSize();
         private int webSocketMaxFrameSize = defaultWebSocketMaxFrameSize();
         private boolean useNativeTransport = defaultUseNativeTransport();
-        private boolean usePooledMemory = defaultUsePooledMemory();
+        private ByteBufAllocator allocator;
         private Map<ChannelOption<Object>, Object> channelOptions = new HashMap<>();
         private EventLoopGroup eventLoopGroup;
         private Timer nettyTimer;
@@ -649,6 +667,7 @@ public class DefaultAsyncHttpClientConfig implements AsyncHttpClientConfig {
         private AdditionalChannelInitializer httpAdditionalChannelInitializer;
         private AdditionalChannelInitializer wsAdditionalChannelInitializer;
         private ResponseBodyPartFactory responseBodyPartFactory = ResponseBodyPartFactory.EAGER;
+        private int ioThreadsCount = defaultIoThreadsCount();
 
         public Builder() {
         }
@@ -716,12 +735,13 @@ public class DefaultAsyncHttpClientConfig implements AsyncHttpClientConfig {
             channelOptions.putAll(config.getChannelOptions());
             eventLoopGroup = config.getEventLoopGroup();
             useNativeTransport = config.isUseNativeTransport();
-            usePooledMemory = config.isUsePooledMemory();
+            allocator = config.getAllocator();
             nettyTimer = config.getNettyTimer();
             threadFactory = config.getThreadFactory();
             httpAdditionalChannelInitializer = config.getHttpAdditionalChannelInitializer();
             wsAdditionalChannelInitializer = config.getWsAdditionalChannelInitializer();
             responseBodyPartFactory = config.getResponseBodyPartFactory();
+            ioThreadsCount = config.getIoThreadsCount();
         }
 
         // http
@@ -791,13 +811,12 @@ public class DefaultAsyncHttpClientConfig implements AsyncHttpClientConfig {
         }
 
         public Builder setProxyServer(ProxyServer proxyServer) {
-            this.proxyServerSelector = ProxyUtils.createProxyServerSelector(proxyServer);
+            this.proxyServerSelector = uri -> proxyServer;
             return this;
         }
 
         public Builder setProxyServer(ProxyServer.Builder proxyServerBuilder) {
-            this.proxyServerSelector = ProxyUtils.createProxyServerSelector(proxyServerBuilder.build());
-            return this;
+            return setProxyServer(proxyServerBuilder.build());
         }
 
         public Builder setUseProxySelector(boolean useProxySelector) {
@@ -1027,8 +1046,8 @@ public class DefaultAsyncHttpClientConfig implements AsyncHttpClientConfig {
             return this;
         }
 
-        public Builder setUsePooledMemory(boolean usePooledMemory) {
-            this.usePooledMemory = usePooledMemory;
+        public Builder setAllocator(ByteBufAllocator allocator) {
+            this.allocator = allocator;
             return this;
         }
 
@@ -1054,6 +1073,11 @@ public class DefaultAsyncHttpClientConfig implements AsyncHttpClientConfig {
 
         public Builder setResponseBodyPartFactory(ResponseBodyPartFactory responseBodyPartFactory) {
             this.responseBodyPartFactory = responseBodyPartFactory;
+            return this;
+        }
+
+        public Builder setIoThreadsCount(int ioThreadsCount) {
+            this.ioThreadsCount = ioThreadsCount;
             return this;
         }
 
@@ -1092,6 +1116,7 @@ public class DefaultAsyncHttpClientConfig implements AsyncHttpClientConfig {
                     shutdownTimeout, //
                     keepAlive, //
                     pooledConnectionIdleTimeout, //
+                    connectionPoolCleanerPeriod, //
                     connectionTtl, //
                     maxConnections, //
                     maxConnectionsPerHost, //
@@ -1124,12 +1149,13 @@ public class DefaultAsyncHttpClientConfig implements AsyncHttpClientConfig {
                     channelOptions.isEmpty() ? Collections.emptyMap() : Collections.unmodifiableMap(channelOptions),//
                     eventLoopGroup, //
                     useNativeTransport, //
-                    usePooledMemory, //
+                    allocator, //
                     nettyTimer, //
                     threadFactory, //
                     httpAdditionalChannelInitializer, //
                     wsAdditionalChannelInitializer, //
-                    responseBodyPartFactory);
+                    responseBodyPartFactory, //
+                    ioThreadsCount);
         }
     }
 }

@@ -1,17 +1,15 @@
 /*
- * Copyright 2010 Ning, Inc.
+ * Copyright (c) 2016 AsyncHttpClient Project. All rights reserved.
  *
- * This program is licensed to you under the Apache License, version 2.0
- * (the "License"); you may not use this file except in compliance with the
- * License.  You may obtain a copy of the License at:
+ * This program is licensed to you under the Apache License Version 2.0,
+ * and you may not use this file except in compliance with the Apache License Version 2.0.
+ * You may obtain a copy of the Apache License Version 2.0 at
+ *     http://www.apache.org/licenses/LICENSE-2.0.
  *
- *    http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
- * License for the specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the Apache License Version 2.0 is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the Apache License Version 2.0 for the specific language governing permissions and limitations there under.
  */
 package org.asynchttpclient.util;
 
@@ -194,7 +192,7 @@ public final class Utf8UrlEncoder {
         return sb;
     }
 
-    private final static void appendSingleByteEncoded(StringBuilder sb, int value, boolean encodeSpaceAsPlus) {
+    private static void appendSingleByteEncoded(StringBuilder sb, int value, boolean encodeSpaceAsPlus) {
 
         if (value == ' ' && encodeSpaceAsPlus) {
             sb.append('+');
@@ -206,7 +204,7 @@ public final class Utf8UrlEncoder {
         sb.append(HEX[value & 0xF]);
     }
 
-    private final static void appendMultiByteEncoded(StringBuilder sb, int value) {
+    private static void appendMultiByteEncoded(StringBuilder sb, int value) {
         if (value < 0x800) {
             appendSingleByteEncoded(sb, (0xc0 | (value >> 6)), false);
             appendSingleByteEncoded(sb, (0x80 | (value & 0x3f)), false);

@@ -46,7 +46,7 @@ import org.asynchttpclient.filter.FilterException;
 import org.asynchttpclient.filter.IOExceptionFilter;
 import org.asynchttpclient.handler.AsyncHandlerExtensions;
 import org.asynchttpclient.handler.TransferCompletionHandler;
-import org.asynchttpclient.netty.Callback;
+import org.asynchttpclient.netty.OnLastHttpContentCallback;
 import org.asynchttpclient.netty.NettyResponseFuture;
 import org.asynchttpclient.netty.SimpleFutureListener;
 import org.asynchttpclient.netty.channel.ChannelManager;
@@ -85,7 +85,7 @@ public final class NettyRequestSender {
     public <T> ListenableFuture<T> sendRequest(final Request request,//
             final AsyncHandler<T> asyncHandler,//
             NettyResponseFuture<T> future,//
-            boolean reclaimCache) {
+            boolean performingNextRequest) {
 
         if (isClosed())
             throw new IllegalStateException("Closed");
@@ -98,13 +98,13 @@ public final class NettyRequestSender {
         if (proxyServer != null && (request.getUri().isSecured() || request.getUri().isWebSocket()) && !isConnectDone(request, future))
             if (future != null && future.isConnectAllowed())
                 // SSL proxy or websocket: CONNECT for sure
-                return sendRequestWithCertainForceConnect(request, asyncHandler, future, reclaimCache, proxyServer, true);
+                return sendRequestWithCertainForceConnect(request, asyncHandler, future, performingNextRequest, proxyServer, true);
             else
                 // CONNECT will depend if we can pool or connection or if we have to open a new one
-                return sendRequestThroughSslProxy(request, asyncHandler, future, reclaimCache, proxyServer);
+                return sendRequestThroughSslProxy(request, asyncHandler, future, performingNextRequest, proxyServer);
         else
             // no CONNECT for sure
-            return sendRequestWithCertainForceConnect(request, asyncHandler, future, reclaimCache, proxyServer, false);
+            return sendRequestWithCertainForceConnect(request, asyncHandler, future, performingNextRequest, proxyServer, false);
     }
 
     private boolean isConnectDone(Request request, NettyResponseFuture<?> future) {
@@ -122,7 +122,7 @@ public final class NettyRequestSender {
             Request request,//
             AsyncHandler<T> asyncHandler,//
             NettyResponseFuture<T> future,//
-            boolean reclaimCache,//
+            boolean performingNextRequest,//
             ProxyServer proxyServer,//
             boolean forceConnect) {
 
@@ -133,7 +133,7 @@ public final class NettyRequestSender {
         if (Channels.isChannelValid(channel))
             return sendRequestWithOpenChannel(request, proxyServer, newFuture, asyncHandler, channel);
         else
-            return sendRequestWithNewChannel(request, proxyServer, newFuture, asyncHandler, reclaimCache);
+            return sendRequestWithNewChannel(request, proxyServer, newFuture, asyncHandler, performingNextRequest);
     }
 
     /**
@@ -144,7 +144,7 @@ public final class NettyRequestSender {
             Request request,//
             AsyncHandler<T> asyncHandler,//
             NettyResponseFuture<T> future,//
-            boolean reclaimCache,//
+            boolean performingNextRequest,//
             ProxyServer proxyServer) {
 
         NettyResponseFuture<T> newFuture = null;
@@ -164,7 +164,7 @@ public final class NettyRequestSender {
         }
 
         newFuture = newNettyRequestAndResponseFuture(request, asyncHandler, future, proxyServer, true);
-        return sendRequestWithNewChannel(request, proxyServer, newFuture, asyncHandler, reclaimCache);
+        return sendRequestWithNewChannel(request, proxyServer, newFuture, asyncHandler, performingNextRequest);
     }
 
     private <T> NettyResponseFuture<T> newNettyRequestAndResponseFuture(final Request request, final AsyncHandler<T> asyncHandler, NettyResponseFuture<T> originalFuture,
@@ -203,7 +203,7 @@ public final class NettyRequestSender {
 
     private Channel getOpenChannel(NettyResponseFuture<?> future, Request request, ProxyServer proxyServer, AsyncHandler<?> asyncHandler) {
 
-        if (future != null && future.reuseChannel() && Channels.isChannelValid(future.channel()))
+        if (future != null && future.isReuseChannel() && Channels.isChannelValid(future.channel()))
             return future.channel();
         else
             return pollPooledChannel(request, proxyServer, asyncHandler);
@@ -244,7 +244,7 @@ public final class NettyRequestSender {
             ProxyServer proxy,//
             NettyResponseFuture<T> future,//
             AsyncHandler<T> asyncHandler,//
-            boolean reclaimCache) {
+            boolean performingNextRequest) {
 
         // some headers are only set when performing the first request
         HttpHeaders headers = future.getNettyRequest().getHttpRequest().headers();
@@ -253,8 +253,8 @@ public final class NettyRequestSender {
         requestFactory.addAuthorizationHeader(headers, perConnectionAuthorizationHeader(request, proxy, realm));
         requestFactory.setProxyAuthorizationHeader(headers, perConnectionProxyAuthorizationHeader(request, proxyRealm));
 
-        future.getInAuth().set(realm != null && realm.isUsePreemptiveAuth() && realm.getScheme() != AuthScheme.NTLM);
-        future.getInProxyAuth().set(proxyRealm != null && proxyRealm.isUsePreemptiveAuth() && proxyRealm.getScheme() != AuthScheme.NTLM);
+        future.setInAuth(realm != null && realm.isUsePreemptiveAuth() && realm.getScheme() != AuthScheme.NTLM);
+        future.setInProxyAuth(proxyRealm != null && proxyRealm.isUsePreemptiveAuth() && proxyRealm.getScheme() != AuthScheme.NTLM);
 
         // Do not throw an exception when we need an extra connection for a redirect
         // FIXME why? This violate the max connection per host handling, right?
@@ -262,14 +262,15 @@ public final class NettyRequestSender {
 
         Object partitionKey = future.getPartitionKey();
 
-        final boolean channelPreempted = !reclaimCache;
+        // we disable channelPreemption when performing next requests
+        final boolean acquireChannelLock = !performingNextRequest;
 
         try {
             // Do not throw an exception when we need an extra connection for a
             // redirect.
-            if (channelPreempted) {
+            if (acquireChannelLock) {
                 // if there's an exception here, channel wasn't preempted and resolve won't happen
-                channelManager.preemptChannel(partitionKey);
+                channelManager.acquireChannelLock(partitionKey);
             }
         } catch (Throwable t) {
             abort(null, future, getCause(t));
@@ -284,19 +285,19 @@ public final class NettyRequestSender {
 
                     @Override
                     protected void onSuccess(List<InetSocketAddress> addresses) {
-                        NettyConnectListener<T> connectListener = new NettyConnectListener<>(future, NettyRequestSender.this, channelManager, channelPreempted, partitionKey);
+                        NettyConnectListener<T> connectListener = new NettyConnectListener<>(future, NettyRequestSender.this, channelManager, acquireChannelLock, partitionKey);
                         NettyChannelConnector connector = new NettyChannelConnector(request.getLocalAddress(), addresses, asyncHandler, clientState, config);
                         if (!future.isDone()) {
                             connector.connect(bootstrap, connectListener);
-                        } else if (channelPreempted) {
-                            channelManager.abortChannelPreemption(partitionKey);
+                        } else if (acquireChannelLock) {
+                            channelManager.releaseChannelLock(partitionKey);
                         }
                     }
 
                     @Override
                     protected void onFailure(Throwable cause) {
-                        if (channelPreempted) {
-                            channelManager.abortChannelPreemption(partitionKey);
+                        if (acquireChannelLock) {
+                            channelManager.releaseChannelLock(partitionKey);
                         }
                         abort(null, future, getCause(cause));
                     }
@@ -405,12 +406,14 @@ public final class NettyRequestSender {
     }
 
     public void handleUnexpectedClosedChannel(Channel channel, NettyResponseFuture<?> future) {
-        if (future.isDone()) {
-            channelManager.closeChannel(channel);
-        } else if (future.incrementRetryAndCheck() && retry(future)) {
-            future.pendingException = null;
-        } else {
-            abort(channel, future, future.pendingException != null ? future.pendingException : RemotelyClosedException.INSTANCE);
+        if (Channels.getInactiveToken(channel)) {
+            if (future.isDone()) {
+                channelManager.closeChannel(channel);
+            } else if (future.incrementRetryAndCheck() && retry(future)) {
+                future.pendingException = null;
+            } else {
+                abort(channel, future, future.pendingException != null ? future.pendingException : RemotelyClosedException.INSTANCE);
+            }
         }
     }
 
@@ -419,10 +422,9 @@ public final class NettyRequestSender {
         if (isClosed())
             return false;
 
-        if (future.canBeReplayed()) {
-            // FIXME should we set future.setReuseChannel(false); ?
+        if (future.isReplayPossible()) {
             future.setChannelState(ChannelState.RECONNECTED);
-            future.getAndSetStatusReceived(false);
+            future.isAndSetStatusReceived(false);
 
             LOGGER.debug("Trying to recover request {}\n", future.getNettyRequest().getHttpRequest());
             if (future.getAsyncHandler() instanceof AsyncHandlerExtensions) {
@@ -458,7 +460,7 @@ public final class NettyRequestSender {
             }
         }
 
-        if (fc.replayRequest() && future.incrementRetryAndCheck() && future.canBeReplayed()) {
+        if (fc.replayRequest() && future.incrementRetryAndCheck() && future.isReplayPossible()) {
             replayRequest(future, fc, channel);
             replayed = true;
         }
@@ -466,12 +468,6 @@ public final class NettyRequestSender {
     }
 
     public <T> void sendNextRequest(final Request request, final NettyResponseFuture<T> future) {
-        // remove attribute in case the channel gets closed so it doesn't try to recover the previous future
-        Channel channel = future.channel();
-        if (channel != null) {
-            // channel can be null when it was closed by the server before it could be set
-            Channels.setAttribute(channel, null);
-        }
         sendRequest(request, future.getAsyncHandler(), future, true);
     }
 
@@ -523,17 +519,12 @@ public final class NettyRequestSender {
         return clientState.isClosed();
     }
 
-    public final Callback newExecuteNextRequestCallback(final NettyResponseFuture<?> future, final Request nextRequest) {
-
-        return new Callback(future) {
+    public void drainChannelAndExecuteNextRequest(final Channel channel, final NettyResponseFuture<?> future, Request nextRequest) {
+        Channels.setAttribute(channel, new OnLastHttpContentCallback(future) {
             @Override
             public void call() {
                 sendNextRequest(nextRequest, future);
             }
-        };
-    }
-
-    public void drainChannelAndExecuteNextRequest(final Channel channel, final NettyResponseFuture<?> future, Request nextRequest) {
-        Channels.setAttribute(channel, newExecuteNextRequestCallback(future, nextRequest));
+        });
     }
 }

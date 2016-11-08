@@ -75,6 +75,7 @@ public class PerRequestRelative302Test extends AbstractBasicTest {
         server.start();
         port1 = connector.getLocalPort();
         logger.info("Local HTTP server started successfully");
+        port2 = findFreePort();
     }
 
     @Test(groups = "online")
@@ -90,12 +91,12 @@ public class PerRequestRelative302Test extends AbstractBasicTest {
     public void redirected302Test() throws Exception {
         isSet.getAndSet(false);
         try (AsyncHttpClient c = asyncHttpClient()) {
-            Response response = c.prepareGet(getTargetUrl()).setFollowRedirect(true).setHeader("X-redirect", "http://www.microsoft.com/").execute().get();
+            Response response = c.prepareGet(getTargetUrl()).setFollowRedirect(true).setHeader("X-redirect", "https://www.microsoft.com/").execute().get();
 
             assertNotNull(response);
             assertEquals(response.getStatusCode(), 200);
 
-            String anyMicrosoftPage = "http://www.microsoft.com[^:]*:80";
+            String anyMicrosoftPage = "https://www.microsoft.com[^:]*:443";
             String baseUrl = getBaseUrl(response.getUri());
 
             assertTrue(baseUrl.matches(anyMicrosoftPage), "response does not show redirection to " + anyMicrosoftPage);
@@ -132,15 +133,18 @@ public class PerRequestRelative302Test extends AbstractBasicTest {
     // @Test(groups = "standalone")
     public void redirected302InvalidTest() throws Exception {
         isSet.getAndSet(false);
-        try (AsyncHttpClient c = asyncHttpClient()) {
-            // If the test hit a proxy, no ConnectException will be thrown and instead of 404 will be returned.
-            Response response = c.preparePost(getTargetUrl()).setFollowRedirect(true).setHeader("X-redirect", String.format("http://localhost:%d/", port2)).execute().get();
+        Exception e = null;
 
-            assertNotNull(response);
-            assertEquals(response.getStatusCode(), 404);
+        try (AsyncHttpClient c = asyncHttpClient()) {
+            c.preparePost(getTargetUrl()).setFollowRedirect(true).setHeader("X-redirect", String.format("http://localhost:%d/", port2)).execute().get();
         } catch (ExecutionException ex) {
-            assertEquals(ex.getCause().getClass(), ConnectException.class);
+            e = ex;
         }
+
+        assertNotNull(e);
+        Throwable cause = e.getCause();
+        assertTrue(cause instanceof ConnectException);
+        assertTrue(cause.getMessage().contains(":" + port2));
     }
 
     // @Test(groups = "standalone")

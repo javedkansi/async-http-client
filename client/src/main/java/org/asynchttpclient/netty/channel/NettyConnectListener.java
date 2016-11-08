@@ -60,7 +60,7 @@ public final class NettyConnectListener<T> {
 
     public void abortChannelPreemption(Channel channel) {
         if (channelPreempted) {
-            channelManager.abortChannelPreemption(partitionKey);
+            channelManager.releaseChannelLock(partitionKey);
         }
 
         Channels.silentlyCloseChannel(channel);
@@ -94,6 +94,8 @@ public final class NettyConnectListener<T> {
     }
 
     public void onSuccess(Channel channel, InetSocketAddress remoteAddress) {
+
+        Channels.setInactiveToken(channel);
 
         TimeoutsHolder timeoutsHolder = future.getTimeoutsHolder();
 

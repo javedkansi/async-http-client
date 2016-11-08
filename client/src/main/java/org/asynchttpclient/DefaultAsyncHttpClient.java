@@ -17,6 +17,7 @@
 package org.asynchttpclient;
 
 import static org.asynchttpclient.util.Assertions.assertNotNull;
+import io.netty.channel.EventLoopGroup;
 import io.netty.util.HashedWheelTimer;
 import io.netty.util.Timer;
 
@@ -32,6 +33,9 @@ import org.asynchttpclient.netty.request.NettyRequestSender;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * Default and threadsafe implementation of {@link AsyncHttpClient}.
+ */
 public class DefaultAsyncHttpClient implements AsyncHttpClient {
 
     private final static Logger LOGGER = LoggerFactory.getLogger(DefaultAsyncHttpClient.class);
@@ -245,6 +249,10 @@ public class DefaultAsyncHttpClient implements AsyncHttpClient {
 
     public ChannelPool getChannelPool() {
         return channelManager.getChannelPool();
+    }
+
+    public EventLoopGroup getEventLoopGroup() {
+        return channelManager.getEventLoopGroup();
     }
 
     protected BoundRequestBuilder requestBuilder(String method, String url) {

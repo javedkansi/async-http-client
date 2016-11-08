@@ -20,6 +20,7 @@ import static org.asynchttpclient.util.HttpUtils.*;
 import static org.asynchttpclient.util.MiscUtils.*;
 import static org.asynchttpclient.ws.WebSocketUtils.getKey;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
 import io.netty.handler.codec.http.DefaultHttpRequest;
 import io.netty.handler.codec.http.HttpHeaders;
@@ -102,7 +103,8 @@ public final class NettyRequestFactory {
                 nettyBody = new NettyFileBody(fileBodyGenerator.getFile(), fileBodyGenerator.getRegionSeek(), fileBodyGenerator.getRegionLength(), config);
 
             } else if (request.getBodyGenerator() instanceof InputStreamBodyGenerator) {
-                nettyBody = new NettyInputStreamBody(InputStreamBodyGenerator.class.cast(request.getBodyGenerator()).getInputStream());
+                InputStreamBodyGenerator inStreamGenerator = InputStreamBodyGenerator.class.cast(request.getBodyGenerator());
+                nettyBody = new NettyInputStreamBody(inStreamGenerator.getInputStream(), inStreamGenerator.getContentLength());
 
             } else if (request.getBodyGenerator() instanceof ReactiveStreamsBodyGenerator) {
                 ReactiveStreamsBodyGenerator reactiveStreamsBodyGenerator = (ReactiveStreamsBodyGenerator)request.getBodyGenerator();
@@ -147,7 +149,7 @@ public final class NettyRequestFactory {
             nettyRequest = new NettyRequest(httpRequest, null);
 
         } else if (body == null) {
-            httpRequest = new DefaultFullHttpRequest(httpVersion, method, requestUri);
+            httpRequest = new DefaultFullHttpRequest(httpVersion, method, requestUri, Unpooled.EMPTY_BUFFER);
             nettyRequest = new NettyRequest(httpRequest, null);
 
         } else {
